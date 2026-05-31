@@ -1,5 +1,4 @@
 import javafx.application.Application;
-import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.geometry.Rectangle2D;
@@ -18,6 +17,10 @@ import javafx.scene.text.*;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 import org.kordamp.ikonli.javafx.FontIcon;
+import com.example.Database;
+import com.example.Database.StudySessionRecord;
+import com.example.Database.TaskRecord;
+import com.example.Database.UserRecord;
 
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -113,7 +116,11 @@ public class App extends Application {
 
     @Override
     public void start(Stage stage) {
-        seedDemoData();
+        try {
+            Database.initializeSchema();
+        } catch (Exception exception) {
+            System.out.println("MySQL setup skipped: " + exception.getMessage());
+        }
         buildScenes(stage);
 
         stage.setTitle("FocusPad");
@@ -125,22 +132,34 @@ public class App extends Application {
         stage.show();
     }
 
-    private void seedDemoData() {
-        if (!usersByEmail.isEmpty()) {
-            return;
+    private User loadUserFromDatabase(String email) throws Exception {
+        UserRecord record = Database.findUserByEmail(email);
+        if (record == null) {
+            return null;
         }
 
-        User demoUser = new User("Bashar", "bashar@example.com", "1234");
-        demoUser.tasks.add(new Task(nextTaskId++, "Finish JavaFX UI", "High", LocalDate.of(2026, 6, 6), false));
-        demoUser.tasks.add(new Task(nextTaskId++, "Connect MySQL database", "High", LocalDate.of(2026, 6, 5), false));
-        demoUser.tasks.add(new Task(nextTaskId++, "Prepare project presentation", "Medium", LocalDate.of(2026, 6, 6), false));
-        demoUser.tasks.add(new Task(nextTaskId++, "Setup project structure", "Low", LocalDate.of(2026, 6, 2), true));
-        demoUser.sessions.add(new StudySession(nextSessionId++, "JavaFX Project Deadline", "All day"));
-        demoUser.sessions.add(new StudySession(nextSessionId++, "Database Testing", "06/05/2026"));
-        demoUser.sessions.add(new StudySession(nextSessionId++, "UI Polish", "06/04/2026"));
-        demoUser.sessions.add(new StudySession(nextSessionId++, "Study Session", "2:00 PM - 4:00 PM"));
-        demoUser.sessions.add(new StudySession(nextSessionId++, "Team Meeting", "7:00 PM - 8:00 PM"));
-        usersByEmail.put(normalizeEmail(demoUser.email), demoUser);
+        User user = new User(record.username(), record.email(), record.password());
+        user.avatarPath = record.avatarPath();
+
+        for (TaskRecord task : Database.findTasksByUserEmail(record.email())) {
+            user.tasks.add(new Task(task.id(), task.title(), task.priority(), task.deadline(), task.completed()));
+            nextTaskId = Math.max(nextTaskId, task.id() + 1);
+        }
+
+        for (StudySessionRecord session : Database.findStudySessionsByUserEmail(record.email())) {
+            user.sessions.add(new StudySession(session.id(), session.title(), session.details()));
+            nextSessionId = Math.max(nextSessionId, session.id() + 1);
+        }
+
+        usersByEmail.put(normalizeEmail(user.email), user);
+        return user;
+    }
+
+    private User pageUser() {
+        if (currentUser != null) {
+            return currentUser;
+        }
+        return new User("", "", "");
     }
 
     private void buildScenes(Stage stage) {
@@ -196,7 +215,7 @@ public class App extends Application {
         form.setAlignment(Pos.CENTER_LEFT);
 
         Label pageTitle = title("Welcome back!");
-        Label pageSubtitle = subtitle("Demo login: bashar@example.com / 1234");
+        Label pageSubtitle = subtitle("Login with your MySQL account.");
         TextField email = input("Email");
         PasswordField password = passwordInput("Password");
         Label error = errorLabel();
@@ -218,16 +237,20 @@ public class App extends Application {
                 return;
             }
 
-            // TODO: Replace this lookup with database login validation.
-            User user = usersByEmail.get(normalizeEmail(emailText));
-            if (user == null || !user.password.equals(passwordText)) {
-                error.setText("Invalid email or password.");
-                return;
-            }
+            try {
+                UserRecord record = Database.findUserByEmail(emailText);
+                if (record == null || !record.password().equals(passwordText)) {
+                    error.setText("Invalid email or password.");
+                    return;
+                }
 
-            currentUser = user;
-            error.setText("");
-            showPage(stage, Page.DASHBOARD);
+                User user = loadUserFromDatabase(record.email());
+                currentUser = user;
+                error.setText("");
+                showPage(stage, Page.DASHBOARD);
+            } catch (Exception exception) {
+                error.setText("Database error: " + exception.getMessage());
+            }
         });
 
         Button register = linkButton("Don't have an account? Register");
@@ -278,6 +301,16 @@ public class App extends Application {
                 return;
             }
 
+            try {
+                if (Database.userExists(emailText)) {
+                    error.setText("An account with this email already exists.");
+                    return;
+                }
+            } catch (Exception exception) {
+                error.setText("Database error: " + exception.getMessage());
+                return;
+            }
+
             if (usersByEmail.containsKey(normalizeEmail(emailText))) {
                 error.setText("An account with this email already exists.");
                 return;
@@ -293,13 +326,14 @@ public class App extends Application {
                 return;
             }
 
-            User newUser = new User(usernameText, emailText, passwordText);
-            usersByEmail.put(normalizeEmail(emailText), newUser);
-            currentUser = newUser;
-
-            // TODO: Insert the registered user into the database.
-            error.setText("");
-            showPage(stage, Page.DASHBOARD);
+            try {
+                Database.insertUser(usernameText, emailText, passwordText);
+                currentUser = loadUserFromDatabase(emailText);
+                error.setText("");
+                showPage(stage, Page.DASHBOARD);
+            } catch (Exception exception) {
+                error.setText("Database error: " + exception.getMessage());
+            }
         });
 
         Button login = linkButton("Already have an account? Login");
@@ -314,7 +348,7 @@ public class App extends Application {
     private Scene createHomeScene(Stage stage) {
         BorderPane root = appShell(stage, Page.DASHBOARD);
         VBox main = mainContent();
-        User user = activeUser();
+        User user = pageUser();
 
         int totalTasks = user.tasks.size();
         int completedTasks = completedCount(user);
@@ -406,7 +440,7 @@ public class App extends Application {
     private Scene createTasksScene(Stage stage) {
         BorderPane root = appShell(stage, Page.TASKS);
         VBox main = mainContent();
-        User user = activeUser();
+        User user = pageUser();
 
         Label heading = title("Tasks");
         Label subheading = subtitle("Create, update, complete, and delete your tasks.");
@@ -493,12 +527,15 @@ public class App extends Application {
                 return;
             }
 
-            Task task = new Task(nextTaskId++, text, priority.getValue(), deadline.getValue(), false);
-            user.tasks.add(task);
-
-            // TODO: Insert the new task into the database for currentUser.email.
-            currentTaskFilter = TaskFilter.ALL;
-            showPage(stage, Page.TASKS);
+            try {
+                int id = Database.insertTask(user.email, text, priority.getValue(), deadline.getValue(), false);
+                user.tasks.add(new Task(id, text, priority.getValue(), deadline.getValue(), false));
+                nextTaskId = Math.max(nextTaskId, id + 1);
+                currentTaskFilter = TaskFilter.ALL;
+                showPage(stage, Page.TASKS);
+            } catch (Exception exception) {
+                error.setText("Database error: " + exception.getMessage());
+            }
         });
 
         VBox listCard = card();
@@ -513,7 +550,7 @@ public class App extends Application {
     private Scene createCalendarScene(Stage stage) {
         BorderPane root = appShell(stage, Page.CALENDAR);
         VBox main = mainContent();
-        User user = activeUser();
+        User user = pageUser();
 
         HBox header = new HBox();
         VBox headerText = new VBox(6);
@@ -578,15 +615,15 @@ public class App extends Application {
                 return;
             }
 
-            StudySession session = new StudySession(
-                    nextSessionId++,
-                    text,
-                    datePicker.getValue() == null ? LocalDate.now().format(displayDateFormatter) : datePicker.getValue().format(displayDateFormatter)
-            );
-            user.sessions.add(session);
-
-            // TODO: Insert this calendar session into the database for currentUser.email.
-            showPage(stage, Page.CALENDAR);
+            String details = datePicker.getValue() == null ? LocalDate.now().format(displayDateFormatter) : datePicker.getValue().format(displayDateFormatter);
+            try {
+                int id = Database.insertStudySession(user.email, text, details);
+                user.sessions.add(new StudySession(id, text, details));
+                nextSessionId = Math.max(nextSessionId, id + 1);
+                showPage(stage, Page.CALENDAR);
+            } catch (Exception exception) {
+                sessionError.setText("Database error: " + exception.getMessage());
+            }
         });
 
         HBox.setHgrow(calendarCard, Priority.ALWAYS);
@@ -602,7 +639,7 @@ public class App extends Application {
     private Scene createSettingsScene(Stage stage) {
         BorderPane root = appShell(stage, Page.SETTINGS);
         VBox main = mainContent();
-        User user = activeUser();
+        User user = pageUser();
 
         Label heading = title("Settings");
         Label subheading = subtitle("Customize your FocusPad experience.");
@@ -644,7 +681,12 @@ public class App extends Application {
                 user.avatarPath = file.getAbsolutePath();
                 setCircularAvatarImage(profilePreview, new Image(file.toURI().toString()));
                 avatar.getChildren().setAll(profilePreview);
-                // TODO: Save avatarPath to the database for this user.
+                try {
+                    Database.updateUserProfile(user.email, user.username, user.password, user.avatarPath);
+                } catch (Exception exception) {
+                    saveMessage.setTextFill(Color.web(DANGER));
+                    saveMessage.setText("Database error: " + exception.getMessage());
+                }
             }
         });
 
@@ -677,16 +719,20 @@ public class App extends Application {
                 return;
             }
 
-            user.username = newUsername;
-            if (!newPasswordText.isEmpty()) {
-                user.password = newPasswordText;
+            String passwordToSave = newPasswordText.isEmpty() ? user.password : newPasswordText;
+            try {
+                Database.updateUserProfile(user.email, newUsername, passwordToSave, user.avatarPath);
+                user.username = newUsername;
+                user.password = passwordToSave;
+                usersByEmail.put(normalizeEmail(user.email), user);
+                profileName.setText(newUsername);
+                newPassword.clear();
+                saveMessage.setTextFill(Color.web(SUCCESS));
+                saveMessage.setText("Changes saved.");
+            } catch (Exception exception) {
+                saveMessage.setTextFill(Color.web(DANGER));
+                saveMessage.setText("Database error: " + exception.getMessage());
             }
-
-            // TODO: Update the current user's profile/password in the database.
-            profileName.setText(newUsername);
-            newPassword.clear();
-            saveMessage.setTextFill(Color.web(SUCCESS));
-            saveMessage.setText("Changes saved.");
         });
         profileCard.getChildren().addAll(sectionTitle("Profile"), profileHeader, username, newPassword, saveMessage, save);
 
@@ -713,28 +759,8 @@ public class App extends Application {
     }
 
     private void showPage(Stage stage, Page pageToShow) {
-        boolean wasMaximized = stage.isMaximized();
-        boolean wasFullScreen = stage.isFullScreen();
-        double width = stage.getWidth();
-        double height = stage.getHeight();
-
         buildScenes(stage);
         stage.setScene(sceneFor(pageToShow));
-
-        if (!wasMaximized && !wasFullScreen) {
-            stage.setWidth(width);
-            stage.setHeight(height);
-            stage.centerOnScreen();
-        }
-
-        Platform.runLater(() -> {
-            if (wasFullScreen) {
-                stage.setFullScreen(true);
-            }
-            if (wasMaximized) {
-                stage.setMaximized(true);
-            }
-        });
     }
 
     private void applyTheme(Stage stage, Theme theme, Page pageToShow) {
@@ -746,14 +772,6 @@ public class App extends Application {
         currentUser = null;
         currentTaskFilter = TaskFilter.ALL;
         showPage(stage, Page.LOGIN);
-    }
-
-    private void resizeStage(Stage stage, double width, double height) {
-        stage.setMaximized(false);
-        stage.setFullScreen(false);
-        stage.setWidth(width);
-        stage.setHeight(height);
-        stage.centerOnScreen();
     }
 
     private Scene sceneFor(Page page) {
@@ -827,9 +845,9 @@ public class App extends Application {
         checklist.setMaxWidth(185);
         checklist.setAlignment(Pos.CENTER_LEFT);
         checklist.getChildren().addAll(
-                illustrationLine("fas-check-circle", "Plan project screens"),
-                illustrationLine("fas-check-circle", "Design task cards"),
-                illustrationLine("fas-circle", "Connect database")
+                illustrationLine("fas-check-circle", "Review lecture notes"),
+                illustrationLine("fas-check-circle", "Finish assignment"),
+                illustrationLine("fas-circle", "Prepare for quiz")
         );
 
         Rectangle base = new Rectangle(275, 16);
@@ -1010,9 +1028,13 @@ public class App extends Application {
             dialog.showAndWait().ifPresent(newTitle -> {
                 String cleanedTitle = newTitle.trim();
                 if (!cleanedTitle.isEmpty()) {
-                    task.title = cleanedTitle;
-                    // TODO: Update this task in the database using task.id and currentUser.email.
-                    showPage(stage, Page.TASKS);
+                    try {
+                        Database.updateTaskTitle(activeUser().email, task.id, cleanedTitle);
+                        task.title = cleanedTitle;
+                        showPage(stage, Page.TASKS);
+                    } catch (Exception exception) {
+                        showError("Database error", exception.getMessage());
+                    }
                 }
             });
         });
@@ -1020,15 +1042,23 @@ public class App extends Application {
         Button delete = dangerButton("Delete");
         delete.setGraphic(icon("fas-trash-alt", 12, "#FFFFFF"));
         delete.setOnAction(event -> {
-            activeUser().tasks.removeIf(savedTask -> savedTask.id == task.id);
-            // TODO: Delete this task from the database using task.id and currentUser.email.
-            showPage(stage, Page.TASKS);
+            try {
+                Database.deleteTask(activeUser().email, task.id);
+                activeUser().tasks.removeIf(savedTask -> savedTask.id == task.id);
+                showPage(stage, Page.TASKS);
+            } catch (Exception exception) {
+                showError("Database error", exception.getMessage());
+            }
         });
 
         checkBox.selectedProperty().addListener((observable, oldValue, selected) -> {
-            task.completed = selected;
-            // TODO: Update the completed status in the database using task.id and currentUser.email.
-            showPage(stage, Page.TASKS);
+            try {
+                Database.updateTaskCompleted(activeUser().email, task.id, selected);
+                task.completed = selected;
+                showPage(stage, Page.TASKS);
+            } catch (Exception exception) {
+                showError("Database error", exception.getMessage());
+            }
         });
 
         row.getChildren().addAll(checkBox, taskTitle, spacer, priorityLabel, deadlineLabel, edit, delete);
@@ -1044,10 +1074,6 @@ public class App extends Application {
         observableTasks.setAll(visibleTasks);
         taskListView.setPlaceholder(emptyState("No tasks in this view yet."));
         taskListView.refresh();
-    }
-
-    private VBox sidebar(Stage stage) {
-        return sidebar(stage, Page.DASHBOARD);
     }
 
     private VBox sidebar(Stage stage, Page activePage) {
@@ -1306,6 +1332,14 @@ public class App extends Application {
         return label;
     }
 
+    private void showError(String title, String message) {
+        Alert alert = new Alert(Alert.AlertType.ERROR);
+        alert.setTitle(title);
+        alert.setHeaderText(title);
+        alert.setContentText(message);
+        alert.showAndWait();
+    }
+
     private Label emptyState(String text) {
         Label label = subtitle(text);
         label.setPadding(new Insets(18));
@@ -1377,10 +1411,7 @@ public class App extends Application {
     }
 
     private User activeUser() {
-        if (currentUser != null) {
-            return currentUser;
-        }
-        return usersByEmail.get("bashar@example.com");
+        return currentUser;
     }
 
     private String normalizeEmail(String email) {
@@ -1549,3 +1580,429 @@ public class App extends Application {
         launch(args);
     }
 }
+
+
+// package com.example;
+
+// import javafx.application.Application;
+// import javafx.geometry.Insets;
+// import javafx.geometry.Pos;
+// import javafx.scene.Scene;
+// import javafx.scene.control.*;
+// import javafx.scene.layout.*;
+// import javafx.scene.paint.Color;
+// import javafx.scene.text.Font;
+// import javafx.scene.text.FontWeight;
+// import javafx.stage.Stage;
+// import javafx.collections.FXCollections;
+// import javafx.collections.ObservableList;
+
+// public class App extends Application {
+//     Scene startScene, loginScene, signupScene, homeScene, taskScene, calendarScene, settingsScene;
+//     public void start(Stage primaryStage) {
+//         // UI------------------------------------------------------
+//         // Start Page
+//         Label logo = new Label("Focus Pad");
+//         Label slogan = new Label("Your day, organized simply.");
+//         logo.setFont(Font.font("Arial", FontWeight.BOLD, 30));
+//         Button lgn = new Button("Login");
+//         Button sgnup = new Button("Register");
+        
+//         // Login
+//         Label emLogin = new Label("Email: ");
+//         TextField emailLogin = new TextField();
+//         emailLogin.setPromptText("Enter your email...");
+//         Label passLogin = new Label("Password: ");
+//         PasswordField passwordLogin = new PasswordField();
+//         passwordLogin.setPromptText("Enter your password...");
+//         Label err1 = new Label("");
+//         err1.setTextFill(Color.RED);
+//         Button submitLogin = new Button("Login");
+//         Button backLogin = new Button("Back");
+        
+//         // Sign up
+//         Label usr = new Label("Username");
+//         TextField username = new TextField();
+//         username.setPromptText("Enter your username...");
+//         Label emSign = new Label("Email: ");
+//         TextField emailSign = new TextField();
+//         emailSign.setPromptText("Enter your email...");
+//         Label passSign = new Label("Password: ");
+//         PasswordField passwordSign = new PasswordField();
+//         passwordSign.setPromptText("Enter your password...");
+//         Label err2 = new Label("");
+//         err2.setTextFill(Color.RED);
+//         Button submitSign = new Button("Sign up");
+//         Button backSign = new Button("Back");
+        
+//         // Home page
+//         Label welcome = new Label("Welcome back 👋");
+//         welcome.setFont(Font.font("Arial", FontWeight.BOLD, 26));
+//         Label userLabel = new Label(""); // replace with DB username
+//         userLabel.setFont(Font.font("Arial", FontWeight.BOLD, 20));
+//         Label subtitle = new Label("Let’s make today productive.");
+//         subtitle.setTextFill(Color.GRAY);
+//         Label stat1 = new Label("Tasks Today: ");
+//         Label stat2 = new Label("Completed: ");
+//         Label stat3 = new Label("Pending: ");
+//         Label todayTitle = new Label("Today’s Tasks");
+//         todayTitle.setFont(Font.font("Arial", FontWeight.BOLD, 16));
+//         ListView<String> todayTasks = new ListView<>();
+//         todayTasks.setPrefHeight(120);
+//         Label todayTitle2 = new Label("Calendar");
+//         todayTitle2.setFont(Font.font("Arial", FontWeight.BOLD, 16));
+//         ListView<String> todayCalendar = new ListView<>();
+//         todayCalendar.setPrefHeight(120);
+//         Button openTasks = new Button("Tasks Dashboard");
+//         Button openCalendar = new Button("Calendar");
+//         Button openSettings = new Button("Settings");
+        
+//         // Task dashboard
+//         ObservableList<String> tasks = FXCollections.observableArrayList();
+//         ListView<String> taskList = new ListView<>(tasks);
+//         TextField taskInput = new TextField();
+//         Label taskTitle = new Label("Task Dashboard");
+//         taskTitle.setFont(Font.font("Arial", FontWeight.BOLD, 24));
+//         taskInput.setPromptText("Enter new task...");
+//         Button addTask = new Button("Add");
+//         Button editTask = new Button("Edit");
+//         Button deleteTask = new Button("Delete");
+//         Button markDone = new Button("Mark Done");
+//         Button backTasks = new Button("Home");
+
+//         // schedule and calendar
+//         ObservableList<String> schedule = FXCollections.observableArrayList();
+//         ListView<String> scheduleList = new ListView<>(schedule);
+//         scheduleList.setPrefHeight(300);
+//         Label calendarTitle = new Label("Calendar / Schedule");
+//         calendarTitle.setFont(Font.font("Arial", FontWeight.BOLD, 24));
+//         TextField scheduleInput = new TextField();
+//         scheduleInput.setPromptText("Enter event...");
+//         DatePicker scheduleDate = new DatePicker();
+//         scheduleDate.setPromptText("Select date");
+//         ComboBox<String> typeBox = new ComboBox<>();
+//         typeBox.getItems().addAll("Deadline", "Appointment", "Study Session");
+//         typeBox.setValue("Study Session");
+//         Button addSchedule = new Button("Add");
+//         Button deleteSchedule = new Button("Delete");
+//         Button backCalendar = new Button("Home");
+
+//         // Settings and profile
+//         Label settingsTitle = new Label("Settings / Profile");
+//         settingsTitle.setFont(Font.font("Arial", FontWeight.BOLD, 24));
+//         Label themeLabel = new Label("Theme");
+//         ComboBox<String> themeBox = new ComboBox<>();
+//         themeBox.getItems().addAll("Light", "Dark");
+//         themeBox.setValue("Light");
+//         Label currentPassLabel = new Label("Current Password");
+//         PasswordField currentPass = new PasswordField();
+//         Label newPassLabel = new Label("New Password");
+//         PasswordField newPass = new PasswordField();
+//         Label settingsMsg = new Label("");
+//         settingsMsg.setTextFill(Color.RED);
+//         Button saveSettings = new Button("Save Changes");
+//         Button backSettings = new Button("Home");
+//         //---------------------------------------------------------
+        
+//         // Layout--------------------------------------------------
+//         VBox startRoot = new VBox(logo, slogan, lgn, sgnup);
+//         startRoot.setSpacing(15);
+//         startRoot.setAlignment(Pos.CENTER);
+
+//         GridPane loginRoot = new GridPane();
+//         loginRoot.add(emLogin, 0, 0);
+//         loginRoot.add(emailLogin, 1, 0);
+//         loginRoot.add(passLogin, 0, 1);
+//         loginRoot.add(passwordLogin, 1, 1);
+//         loginRoot.add(err1, 0, 2);
+//         loginRoot.add(backLogin, 0, 3);
+//         loginRoot.add(submitLogin, 0, 4);
+//         loginRoot.setAlignment(Pos.CENTER);
+//         loginRoot.setVgap(10);
+
+//         GridPane signupRoot = new GridPane();
+//         signupRoot.add(usr, 0, 0);
+//         signupRoot.add(username, 1, 0);
+//         signupRoot.add(emSign, 0, 1);
+//         signupRoot.add(emailSign, 1, 1);
+//         signupRoot.add(passSign, 0, 2);
+//         signupRoot.add(passwordSign, 1, 2);
+//         signupRoot.add(err2, 0, 3);
+//         signupRoot.add(backSign, 0, 4);
+//         signupRoot.add(submitSign, 0, 5);
+//         signupRoot.setAlignment(Pos.CENTER);
+//         signupRoot.setVgap(10);
+
+//         HBox taskButtons = new HBox(10, addTask, editTask, deleteTask, markDone, backTasks);
+//         taskButtons.setAlignment(Pos.CENTER);
+//         VBox taskRoot = new VBox(15, taskTitle, taskInput, taskButtons, taskList);
+//         taskRoot.setAlignment(Pos.CENTER);
+//         taskRoot.setPadding(new Insets(20));
+
+//         VBox statsBox = new VBox(10, stat1, stat2, stat3);
+//         statsBox.setPadding(new Insets(10));
+//         statsBox.setStyle("-fx-border-color: lightgray; -fx-border-radius: 10; -fx-padding: 10;");
+//         VBox buttonsBox = new VBox(10, openTasks, openCalendar, openSettings);
+//         buttonsBox.setAlignment(Pos.CENTER);
+//         VBox homeRoot = new VBox(20, welcome, userLabel, subtitle, todayTitle, statsBox, todayTasks, todayTitle2, todayCalendar, buttonsBox);
+//         homeRoot.setPadding(new Insets(20));
+//         homeRoot.setAlignment(Pos.CENTER_LEFT);
+//         updateStats(stat1, stat2, stat3, tasks);
+//         updateHome(todayTasks, tasks, todayCalendar, schedule);
+
+//         HBox scheduleControls = new HBox(10, scheduleInput, scheduleDate, typeBox, addSchedule);
+//         scheduleControls.setAlignment(Pos.CENTER);
+//         HBox scheduleButtons = new HBox(10, deleteSchedule, backCalendar);
+//         scheduleButtons.setAlignment(Pos.CENTER);
+//         VBox calendarRoot = new VBox(15, calendarTitle, scheduleControls, scheduleList, scheduleButtons);
+//         calendarRoot.setAlignment(Pos.CENTER);
+//         calendarRoot.setPadding(new Insets(20));
+
+//         VBox settingsRoot = new VBox(15, settingsTitle, themeLabel, themeBox, currentPassLabel, currentPass, newPassLabel, newPass, settingsMsg, saveSettings, backSettings);
+//         settingsRoot.setAlignment(Pos.CENTER);
+//         settingsRoot.setPadding(new Insets(20));
+//         //---------------------------------------------------------
+
+//         // actions-------------------------------------------------
+//         lgn.setOnAction(e -> {
+//             primaryStage.setScene(loginScene);
+//             primaryStage.show();
+//         });
+//         sgnup.setOnAction(e -> {
+//             primaryStage.setScene(signupScene);
+//             primaryStage.show();
+//         });
+//         backLogin.setOnAction(e -> {
+//             primaryStage.setScene(startScene);
+//             primaryStage.show();
+//         });
+//         backSign.setOnAction(e -> {
+//             primaryStage.setScene(startScene);
+//             primaryStage.show();
+//         });
+//         backTasks.setOnAction(e -> {
+//             primaryStage.setScene(homeScene);
+//             primaryStage.show();
+//             updateStats(stat1, stat2, stat3, tasks);
+//             updateHome(todayTasks, tasks, todayCalendar, schedule);
+//         });
+//         submitSign.setOnAction(e -> {
+//             String usernameVal = username.getText().trim();
+//             String emailVal = emailSign.getText().trim();
+//             String passVal = passwordSign.getText().trim();
+//             if (emailVal.isEmpty() || passVal.isEmpty() || usernameVal.isEmpty()) {
+//                 err2.setText("Username, Email and password cannot be empty.");
+//             }
+//             else if (passVal.length() < 6) {
+//                 err2.setText("Password must be at least 6 characters.");
+//             }
+//             else {
+//                 err2.setText("");
+//                 primaryStage.setScene(homeScene);
+//                 primaryStage.show();
+//                 updateStats(stat1, stat2, stat3, tasks);
+//                 updateHome(todayTasks, tasks, todayCalendar, schedule);
+//             }
+//         });
+//         submitLogin.setOnAction(e -> {
+//             String emailVal = emailLogin.getText().trim();
+//             String passVal = passwordLogin.getText().trim();
+//             if (emailVal.isEmpty() || passVal.isEmpty()) {
+//                 err1.setText("Email and password cannot be empty.");
+//             }
+//             else if (passVal.length() < 6) {
+//                 err1.setText("Password must be at least 6 characters.");
+//             }
+//             else {
+//                 err1.setText("");
+//                 primaryStage.setScene(homeScene);
+//                 primaryStage.show();
+//                 updateStats(stat1, stat2, stat3, tasks);
+//                 updateHome(todayTasks, tasks, todayCalendar, schedule);
+//             }
+//         });
+//         openTasks.setOnAction(e -> {
+//             primaryStage.setScene(taskScene);
+//             primaryStage.show();
+//         });
+//         addTask.setOnAction(e -> {
+//             String task = taskInput.getText().trim();
+//             if (!task.isEmpty()) {
+//                 tasks.add(task);
+//                 taskInput.clear();
+//                 updateStats(stat1, stat2, stat3, tasks);
+//                 updateHome(todayTasks, tasks, todayCalendar, schedule);
+//             }
+//         });
+//         editTask.setOnAction(e -> {
+//             int index = taskList.getSelectionModel().getSelectedIndex();
+//             if (index >= 0) {
+//                 String newTask = taskInput.getText().trim();
+//                 if (!newTask.isEmpty()) {
+//                     tasks.set(index, newTask);
+//                     taskInput.clear();
+//                 }
+//                 updateStats(stat1, stat2, stat3, tasks);
+//                 updateHome(todayTasks, tasks, todayCalendar, schedule);
+//             }
+//         });
+//         deleteTask.setOnAction(e -> {
+//             int index = taskList.getSelectionModel().getSelectedIndex();
+//             if (index >= 0) {
+//                 tasks.remove(index);
+//                 updateStats(stat1, stat2, stat3, tasks);
+//                 updateHome(todayTasks, tasks, todayCalendar, schedule);
+//             }
+//         });
+//         markDone.setOnAction(e -> {
+//             int index = taskList.getSelectionModel().getSelectedIndex();
+//             if (index >= 0) {
+//                 String task = tasks.get(index);
+//                 if (!task.startsWith("✔ ")) {
+//                     tasks.set(index, "✔ " + task);
+//                     updateStats(stat1, stat2, stat3, tasks);
+//                     updateHome(todayTasks, tasks, todayCalendar, schedule);
+//                 }
+//             }
+//         });
+//         openCalendar.setOnAction(e -> {
+//             primaryStage.setScene(calendarScene);
+//             primaryStage.show();
+//         });
+//         backCalendar.setOnAction(e -> {
+//             primaryStage.setScene(homeScene);
+//             primaryStage.show();
+//             updateStats(stat1, stat2, stat3, tasks);
+//             updateHome(todayTasks, tasks, todayCalendar, schedule);
+//         });
+//         addSchedule.setOnAction(e -> {
+//             String text = scheduleInput.getText().trim();
+//             String type = typeBox.getValue();
+//             if (!text.isEmpty() && scheduleDate.getValue() != null) {
+//                 schedule.add("[" + type + "] " + text + " in " + scheduleDate.getValue());
+//                 scheduleInput.clear();
+//                 scheduleDate.setValue(null);
+//                 updateHome(todayTasks, tasks, todayCalendar, schedule);
+//             }
+//         });
+//         deleteSchedule.setOnAction(e -> {
+//             int index = scheduleList.getSelectionModel().getSelectedIndex();
+
+//             if (index >= 0) {
+//                 schedule.remove(index);
+//             }
+//         });
+//         openSettings.setOnAction(e -> {
+//             primaryStage.setScene(settingsScene);
+//             primaryStage.show();
+//         });
+//         backSettings.setOnAction(e -> {
+//             primaryStage.setScene(homeScene);
+//             primaryStage.show();
+//         });
+//         saveSettings.setOnAction(e -> {
+//             String curr = currentPass.getText().trim();
+//             String next = newPass.getText().trim();
+//             if (!curr.isEmpty() && !next.isEmpty()) {
+//                 if (next.length() < 6) {
+//                     settingsMsg.setText("New password must be at least 6 characters.");
+//                     return;
+//                 }
+//                 else {
+//                     settingsMsg.setText("Password changed successfully.");
+//                     settingsMsg.setTextFill(Color.GREEN);
+//                 }
+//             }
+//             else if (curr.isEmpty() && !next.isEmpty()) {
+//                 settingsMsg.setText("Please enter your current password.");
+//                 settingsMsg.setTextFill(Color.RED);
+//             }
+//             else if (!curr.isEmpty() && next.isEmpty()) {
+//                 settingsMsg.setText("Please enter your new password.");
+//                 settingsMsg.setTextFill(Color.RED);
+//             }
+//             else {
+//                 settingsMsg.setText("");
+//             }
+//             String selectedTheme = themeBox.getValue();
+//             if (selectedTheme.equals("Dark")) {
+//                 settingsRoot.setStyle("-fx-background-color: #1e1e1e;");
+//                 homeRoot.setStyle("-fx-background-color: #1e1e1e;");
+//                 taskRoot.setStyle("-fx-background-color: #1e1e1e;");
+//                 calendarRoot.setStyle("-fx-background-color: #1e1e1e;");
+//                 settingsTitle.setTextFill(Color.WHITE);
+//                 themeLabel.setTextFill(Color.WHITE);
+//                 currentPassLabel.setTextFill(Color.WHITE);
+//                 newPassLabel.setTextFill(Color.WHITE);
+//                 welcome.setTextFill(Color.WHITE);
+//                 userLabel.setTextFill(Color.WHITE);
+//                 todayTitle.setTextFill(Color.WHITE);
+//                 todayTitle2.setTextFill(Color.WHITE);
+//                 taskTitle.setTextFill(Color.WHITE);
+//                 calendarTitle.setTextFill(Color.WHITE);
+//             }
+//             else {
+//                 settingsRoot.setStyle("");
+//                 homeRoot.setStyle("");
+//                 taskRoot.setStyle("");
+//                 calendarRoot.setStyle("");
+//                 settingsTitle.setTextFill(Color.BLACK);
+//                 themeLabel.setTextFill(Color.BLACK);
+//                 currentPassLabel.setTextFill(Color.BLACK);
+//                 newPassLabel.setTextFill(Color.BLACK);
+//                 welcome.setTextFill(Color.BLACK);
+//                 userLabel.setTextFill(Color.BLACK);
+//                 todayTitle.setTextFill(Color.BLACK);
+//                 todayTitle2.setTextFill(Color.BLACK);
+//                 taskTitle.setTextFill(Color.BLACK);
+//                 calendarTitle.setTextFill(Color.BLACK);
+//             }
+//         });
+//         //---------------------------------------------------------
+
+//         // Scene---------------------------------------------------
+//         startScene = new Scene(startRoot, 800, 600);
+//         loginScene = new Scene(loginRoot, 800, 600);
+//         signupScene = new Scene(signupRoot, 800, 600);
+//         taskScene = new Scene(taskRoot, 800, 600);
+//         homeScene = new Scene(homeRoot, 800, 600);
+//         calendarScene = new Scene(calendarRoot, 800, 600);
+//         settingsScene = new Scene(settingsRoot, 800, 600);
+//         //---------------------------------------------------------
+
+//         // Stage---------------------------------------------------
+//         primaryStage.setScene(startScene);
+//         primaryStage.show();
+//         //---------------------------------------------------------
+//     }
+
+//     void updateStats(Label stat1, Label stat2, Label stat3, ObservableList<String> tasks) {
+//         int tot = tasks.size();
+//         int comp = 0;
+//         for (String t : tasks) {
+//             if (t.startsWith("✔ ")) comp++;
+//         }
+//         int pend = tot - comp;
+//         stat1.setText("Tasks Today: " + tot);
+//         stat2.setText("Completed: " + comp);
+//         stat3.setText("Pending: " + pend);
+//     }
+
+//     void updateHome(ListView<String> homeList, ObservableList<String> tasks, ListView<String> homeList2, ObservableList<String> calen) {
+//         homeList.getItems().clear();
+//         for (String t : tasks) {
+//             if (!t.startsWith("✔ ")) {
+//                 homeList.getItems().add(t);
+//             }
+//         }
+//         homeList2.getItems().clear();
+//         for (String t : calen) {
+//             if (!t.startsWith("✔ ")) {
+//                 homeList2.getItems().add(t);
+//             }
+//         }
+//     }
+//     public static void main(String[] args) {
+//         launch(args);
+//     }
+// }
