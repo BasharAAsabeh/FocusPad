@@ -104,17 +104,6 @@ public class Database {
         }
     }
 
-    public static int countUsers() throws SQLException {
-        try (Connection connection = getConnection();
-             Statement statement = connection.createStatement();
-             ResultSet resultSet = statement.executeQuery("SELECT COUNT(*) FROM users")) {
-            if (resultSet.next()) {
-                return resultSet.getInt(1);
-            }
-            return 0;
-        }
-    }
-
     public static UserRecord findUserByEmail(String email) throws SQLException {
         String sql = "SELECT username, email, password, avatar_path FROM users WHERE email = ?";
         try (Connection connection = getConnection();
