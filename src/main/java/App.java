@@ -907,10 +907,6 @@ public class App extends Application {
         return button;
     }
 
-    private Button sidebarButton(String text) {
-        return sidebarButton(text, "fas-circle", false);
-    }
-
     private Button sidebarButton(String text, String iconCode, boolean active) {
         Button button = new Button(text);
         button.setGraphic(icon(iconCode, 15, active ? "#FFFFFF" : "#94A3B8"));
@@ -969,10 +965,6 @@ public class App extends Application {
         box.setStyle(cardStyle());
         box.setEffect(shadow(24, 0.10));
         return box;
-    }
-
-    private VBox statCard(String title, String value) {
-        return statCard(title, value, "fas-chart-bar", PRIMARY);
     }
 
     private VBox statCard(String title, String value, String iconCode, String accent) {
